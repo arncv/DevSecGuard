@@ -397,18 +397,18 @@ async function integrateGitleaks(owner: string, repo: string, findings: Finding[
               line: result.lineNumber,
               code: extractContext(result.content, result.lineNumber),
               confidence: 'high',
-              category: {
+              category: ({
                 byType: {
                   secret: true,
                   vulnerability: false,
-                  codeSmell: false,
+                  codeSmell: false
                 },
                 byLocation: {
                   isSource: false,
                   isConfig: true,
-                  isTest: false,
-                },
-              },
+                  isTest: false
+                }
+              } as FindingCategory),
             });
           });
         } catch (e) {
