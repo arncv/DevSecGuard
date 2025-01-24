@@ -14,6 +14,7 @@ export interface Finding {
   type: 'secret' | 'vulnerability' | 'code_smell';
   severity: 'low' | 'medium' | 'high' | 'critical';
   description: string;
+  confidence: 'low' | 'medium' | 'high';
   file: string;
   line: number;
   code?: string;
@@ -26,12 +27,6 @@ interface FindingCategory {
     secret: boolean;
     vulnerability: boolean;
     codeSmell: boolean;
-  };
-  bySeverity: {
-    critical: boolean;
-    high: boolean;
-    medium: boolean;
-    low: boolean;
   };
   byLocation: {
     isSource: boolean;
@@ -54,6 +49,99 @@ interface RepoContent {
   encoding?: string;
 }
 
+type FileTypeKey = 'FRONTEND' | 'BACKEND' | 'STYLE' | 'CONFIG' | 'TEST';
+
+interface FileTypeConfig {
+  type: string;
+  extensions: string[];
+  vulnerabilities: string[];
+}
+
+// Define file types and their extensions
+const FILE_TYPES: Record<FileTypeKey, FileTypeConfig> = {
+  FRONTEND: {
+    type: 'frontend',
+    extensions: ['.html', '.js', '.jsx', '.ts', '.tsx', '.vue'],
+    vulnerabilities: ['xss', 'clientSideValidation'],
+  },
+  BACKEND: {
+    type: 'backend',
+    extensions: ['.js', '.ts', '.py', '.rb', '.php', '.java'],
+    vulnerabilities: ['sqlInjection', 'nosqlInjection', 'commandInjection'],
+  },
+  STYLE: {
+    type: 'style',
+    extensions: ['.css', '.scss', '.less', '.sass'],
+    vulnerabilities: [], // Style files typically don't have direct security vulnerabilities
+  },
+  CONFIG: {
+    type: 'config',
+    extensions: ['.json', '.yml', '.yaml', '.env', '.config'],
+    vulnerabilities: ['secrets'],
+  },
+  TEST: {
+    type: 'test',
+    extensions: ['.test.js', '.spec.js', '.test.ts', '.spec.ts'],
+    vulnerabilities: [], // Test files are typically ignored for vulnerability scanning
+  },
+};
+
+// Define vulnerability patterns with context rules
+const VULNERABILITY_PATTERNS = {
+  sqlInjection: {
+    patterns: [
+      {
+        regex: /(?:SELECT|INSERT|UPDATE|DELETE|DROP|UNION)\s+.*?\s+FROM\s+[^\s;]+/i,
+        contextRules: [
+          (line: string) => !line.includes('?') && !line.includes('$'), // No parameterization
+          (line: string) => !line.includes('prepared'), // No prepared statements
+        ],
+        confidence: (matches: boolean[]) => matches.every(m => m) ? 'high' : 'low',
+      },
+    ],
+    allowedFileTypes: ['backend'],
+  },
+  nosqlInjection: {
+    patterns: [
+      {
+        regex: /\$where\s*:\s*function\s*\(.*\)|db\.eval\(|mapReduce|group|aggregate/i,
+        contextRules: [
+          (line: string) => line.includes('mongoose') || line.includes('mongodb'),
+          (line: string) => !line.includes('validate'),
+        ],
+        confidence: (matches: boolean[]) => matches.every(m => m) ? 'high' : 'medium',
+      },
+    ],
+    allowedFileTypes: ['backend'],
+  },
+  xss: {
+    patterns: [
+      {
+        regex: /(?:<script\b[^>]*>[\s\S]*?<\/script>|javascript:|\bon[a-z]+\s*=)/i,
+        contextRules: [
+          (line: string) => !line.includes('sanitize') && !line.includes('escape'),
+          (line: string) => !line.includes('DOMPurify'),
+        ],
+        confidence: (matches: boolean[]) => matches.every(m => m) ? 'high' : 'medium',
+      },
+    ],
+    allowedFileTypes: ['frontend'],
+  },
+  secrets: {
+    patterns: [
+      {
+        regex: /(?:api[_-]?key|aws[_-]?key|secret[_-]?key|token)["\s]*[:=]\s*["']?[A-Za-z0-9+/]{32,}["']?/i,
+        contextRules: [
+          (line: string) => !line.includes('example') && !line.includes('test'),
+          (line: string) => !line.includes('dummy') && !line.includes('sample'),
+        ],
+        confidence: (matches: boolean[]) => matches.every(m => m) ? 'high' : 'medium',
+      },
+    ],
+    allowedFileTypes: ['config', 'backend'],
+  },
+};
+
 // Severity scoring weights
 const SEVERITY_WEIGHTS = {
   critical: 10,
@@ -62,29 +150,45 @@ const SEVERITY_WEIGHTS = {
   low: 1,
 };
 
-// Enhanced security patterns
-const SECURITY_PATTERNS = {
-  secrets: {
-    apiKeys: /(?:api[_-]?key|aws[_-]?key|secret[_-]?key|token)["\s]*[:=]\s*["']?[A-Za-z0-9+/]{32,}["']?/i,
-    credentials: /(?:password|passwd|pwd)["\s]*[:=]\s*["']?[^"'\s]+["']?/i,
-    privateKeys: /-----BEGIN [A-Z ]+ PRIVATE KEY-----/,
-  },
-  injection: {
-    sql: /(?:SELECT|INSERT|UPDATE|DELETE|DROP|UNION)\s+.*?\s+FROM\s+[^\s;]+/i,
-    nosql: /\$where\s*:\s*function\s*\(.*\)|db\.eval\(|mapReduce|group|aggregate/i,
-  },
-  xss: {
-    basic: /(?:<script\b[^>]*>[\s\S]*?<\/script>|javascript:|\bon[a-z]+\s*=)/i,
-    advanced: /(?:eval\(|setTimeout\(|setInterval\(|new Function\()/i,
-  },
-};
+function getFileType(filename: string): string | null {
+  // Check for test files first
+  if (Object.values(FILE_TYPES.TEST.extensions).some(ext => filename.endsWith(ext))) {
+    return FILE_TYPES.TEST.type;
+  }
 
-// False positive patterns
-const FALSE_POSITIVE_PATTERNS = {
-  testFiles: /\.(test|spec)\.(js|ts|jsx|tsx)$/i,
-  mockData: /(mock|fake|dummy|test).*\.(json|js|ts)$/i,
-  exampleCode: /example|demo|sample/i,
-};
+  // Check other file types
+  for (const [key, value] of Object.entries(FILE_TYPES)) {
+    if (key in FILE_TYPES && value.extensions.some(ext => filename.toLowerCase().endsWith(ext))) {
+      return value.type;
+    }
+  }
+
+  return null;
+}
+
+function categorizeFinding(finding: Finding) {
+  finding.category = {
+    byType: {
+      secret: finding.type === 'secret',
+      vulnerability: finding.type === 'vulnerability',
+      codeSmell: finding.type === 'code_smell',
+    },
+    byLocation: {
+      isSource: finding.file.endsWith('.js') || finding.file.endsWith('.ts'),
+      isConfig: finding.file.includes('config') || finding.file.endsWith('.json'),
+      isTest: finding.file.includes('.test.') || finding.file.includes('.spec.'),
+    },
+  };
+}
+
+function isVulnerabilityRelevantForFile(vulnType: string, fileType: string): boolean {
+  const key = fileType.toUpperCase() as FileTypeKey;
+  if (!(key in FILE_TYPES)) {
+    return false;
+  }
+  const fileTypeConfig = FILE_TYPES[key];
+  return fileTypeConfig.vulnerabilities.includes(vulnType);
+}
 
 export async function scanRepository(url: string, accessToken: string): Promise<ScanResult> {
   const octokit = new Octokit({
@@ -92,13 +196,11 @@ export async function scanRepository(url: string, accessToken: string): Promise<
   });
 
   try {
-    // Extract owner and repo from URL
     const [owner, repo] = url
       .replace("https://github.com/", "")
       .replace(".git", "")
       .split("/");
 
-    // Get repository contents
     const { data: contents } = await octokit.repos.getContent({
       owner,
       repo,
@@ -114,8 +216,6 @@ export async function scanRepository(url: string, accessToken: string): Promise<
     await Promise.all([
       integrateGitleaks(owner, repo, findings),
       scanDependencies(owner, repo, findings),
-      scanAdditionalPatterns(owner, repo, findings),
-      scanGitHistory(owner, repo, findings),
     ]);
 
     // Post-process findings
@@ -162,7 +262,11 @@ async function scanFiles(
 
       if ('content' in data && typeof data.content === 'string') {
         const content = Buffer.from(data.content, 'base64').toString();
-        scanContent(content, item.path, findings);
+        const fileType = getFileType(item.path);
+        
+        if (fileType) {
+          scanContent(content, item.path, fileType, findings);
+        }
       }
     } else if (item.type === "dir") {
       const { data: dirContents } = await octokit.repos.getContent({
@@ -209,35 +313,21 @@ function calculateSeverityScore(finding: Finding) {
 
 function removeFalsePositives(findings: Finding[]): Finding[] {
   return findings.filter(finding => {
-    // Skip test and mock files
-    if (FALSE_POSITIVE_PATTERNS.testFiles.test(finding.file) || 
-        FALSE_POSITIVE_PATTERNS.mockData.test(finding.file) ||
-        FALSE_POSITIVE_PATTERNS.exampleCode.test(finding.file)) {
+    // Skip low confidence findings unless they're critical
+    if (finding.confidence === 'low' && finding.severity !== 'critical') {
       return false;
     }
+
+    // Skip findings in test or example files
+    if (finding.file.includes('.test.') || 
+        finding.file.includes('.spec.') || 
+        finding.file.includes('example') || 
+        finding.file.includes('sample')) {
+      return false;
+    }
+
     return true;
   });
-}
-
-function categorizeFinding(finding: Finding) {
-  finding.category = {
-    byType: {
-      secret: finding.type === 'secret',
-      vulnerability: finding.type === 'vulnerability',
-      codeSmell: finding.type === 'code_smell',
-    },
-    bySeverity: {
-      critical: finding.severity === 'critical',
-      high: finding.severity === 'high',
-      medium: finding.severity === 'medium',
-      low: finding.severity === 'low',
-    },
-    byLocation: {
-      isSource: finding.file.endsWith('.ts') || finding.file.endsWith('.js'),
-      isConfig: finding.file.includes('config') || finding.file.endsWith('.json'),
-      isTest: finding.file.includes('.test.') || finding.file.includes('.spec.'),
-    },
-  };
 }
 
 function extractContext(content: string, lineNumber: number, contextLines: number = 3): string {
@@ -247,50 +337,47 @@ function extractContext(content: string, lineNumber: number, contextLines: numbe
   return lines.slice(start, end).join('\n');
 }
 
-function scanContent(content: string, filepath: string, findings: Finding[]) {
+function scanContent(content: string, filepath: string, fileType: string, findings: Finding[]) {
   const lines = content.split('\n');
 
   lines.forEach((line, index) => {
-    // Check for secrets
-    Object.entries(SECURITY_PATTERNS.secrets).forEach(([type, pattern]) => {
-      if (pattern.test(line)) {
-        findings.push({
-          type: 'secret',
-          severity: 'critical',
-          description: `Potential ${type} found`,
-          file: filepath,
-          line: index + 1,
-          code: extractContext(content, index + 1),
-        });
-      }
-    });
+    // Check each vulnerability type
+    Object.entries(VULNERABILITY_PATTERNS).forEach(([vulnType, config]) => {
+      // Skip if vulnerability type is not relevant for this file type
+      if (!isVulnerabilityRelevantForFile(vulnType, fileType)) return;
 
-    // Check for injection vulnerabilities
-    Object.entries(SECURITY_PATTERNS.injection).forEach(([type, pattern]) => {
-      if (pattern.test(line)) {
-        findings.push({
-          type: 'vulnerability',
-          severity: 'high',
-          description: `Potential ${type} injection vulnerability`,
-          file: filepath,
-          line: index + 1,
-          code: extractContext(content, index + 1),
-        });
-      }
-    });
+      config.patterns.forEach(pattern => {
+        if (pattern.regex.test(line)) {
+          // Apply context rules
+          const contextMatches = pattern.contextRules.map(rule => rule(line));
+          const confidence = pattern.confidence(contextMatches);
 
-    // Check for XSS vulnerabilities
-    Object.entries(SECURITY_PATTERNS.xss).forEach(([type, pattern]) => {
-      if (pattern.test(line)) {
-        findings.push({
-          type: 'vulnerability',
-          severity: 'high',
-          description: `Potential ${type} XSS vulnerability`,
-          file: filepath,
-          line: index + 1,
-          code: extractContext(content, index + 1),
-        });
-      }
+          // Only add finding if confidence is not low or if it's a critical vulnerability
+          if (confidence !== 'low' || vulnType === 'secrets') {
+            findings.push({
+              type: vulnType === 'secrets' ? 'secret' : 'vulnerability',
+              severity: vulnType === 'secrets' ? 'critical' : 'high',
+              description: `Potential ${vulnType} found`,
+              file: filepath,
+              line: index + 1,
+              code: extractContext(content, index + 1),
+              confidence,
+              category: {
+                byType: {
+                  secret: vulnType === 'secrets',
+                  vulnerability: vulnType !== 'secrets',
+                  codeSmell: false,
+                },
+                byLocation: {
+                  isSource: fileType === FILE_TYPES.FRONTEND.type || fileType === FILE_TYPES.BACKEND.type,
+                  isConfig: fileType === FILE_TYPES.CONFIG.type,
+                  isTest: fileType === FILE_TYPES.TEST.type,
+                },
+              },
+            });
+          }
+        }
+      });
     });
   });
 }
@@ -309,6 +396,19 @@ async function integrateGitleaks(owner: string, repo: string, findings: Finding[
               file: result.file,
               line: result.lineNumber,
               code: extractContext(result.content, result.lineNumber),
+              confidence: 'high',
+              category: {
+                byType: {
+                  secret: true,
+                  vulnerability: false,
+                  codeSmell: false,
+                },
+                byLocation: {
+                  isSource: false,
+                  isConfig: true,
+                  isTest: false,
+                },
+              },
             });
           });
         } catch (e) {
@@ -334,6 +434,19 @@ async function scanDependencies(owner: string, repo: string, findings: Finding[]
               file: 'package.json',
               line: 1,
               code: `Package: ${result.module_name}@${result.version}`,
+              confidence: 'high',
+              category: {
+                byType: {
+                  secret: false,
+                  vulnerability: true,
+                  codeSmell: false,
+                },
+                byLocation: {
+                  isSource: false,
+                  isConfig: true,
+                  isTest: false,
+                },
+              },
             });
           });
         } catch (e) {
@@ -345,42 +458,12 @@ async function scanDependencies(owner: string, repo: string, findings: Finding[]
   });
 }
 
-async function scanAdditionalPatterns(owner: string, repo: string, findings: Finding[]): Promise<void> {
-  return Promise.resolve(); // Placeholder for future pattern implementations
-}
-
-async function scanGitHistory(owner: string, repo: string, findings: Finding[]): Promise<void> {
-  return new Promise((resolve) => {
-    exec(`git log -p`, (error, stdout) => {
-      if (!error && stdout) {
-        const lines = stdout.split('\n');
-        lines.forEach((line, index) => {
-          Object.entries(SECURITY_PATTERNS.secrets).forEach(([type, pattern]) => {
-            if (pattern.test(line)) {
-              findings.push({
-                type: 'secret',
-                severity: 'critical',
-                description: `Historical ${type} found in Git history`,
-                file: 'Git History',
-                line: index + 1,
-                code: extractContext(stdout, index + 1),
-              });
-            }
-          });
-        });
-      }
-      resolve();
-    });
-  });
-}
-
 // Export utilities for use in other components
 export {
   calculateSeverityScore,
   removeFalsePositives,
   extractContext,
-  categorizeFinding,
   SEVERITY_WEIGHTS,
-  FALSE_POSITIVE_PATTERNS,
-  SECURITY_PATTERNS,
+  VULNERABILITY_PATTERNS,
+  FILE_TYPES,
 };
