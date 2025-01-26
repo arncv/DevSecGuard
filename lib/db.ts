@@ -1,17 +1,27 @@
-import { MongoClient } from 'mongodb';
+import { MongoClient, MongoClientOptions, ServerApiVersion } from 'mongodb';
 
 if (!process.env.MONGODB_URI) {
   throw new Error('Please add your Mongo URI to .env.local');
 }
 
-const uri = process.env.MONGODB_URI;
-const options = {
-  connectTimeoutMS: 10000, // 10 seconds
-  serverSelectionTimeoutMS: 10000, // 10 seconds
-  socketTimeoutMS: 20000, // 20 seconds
+// Use the same options that worked in our test script
+const options: MongoClientOptions = {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
+  tls: true,
+  tlsAllowInvalidCertificates: true,
+  tlsAllowInvalidHostnames: true,
+  directConnection: false,
+  retryWrites: true,
+  connectTimeoutMS: 30000,
+  socketTimeoutMS: 45000
 };
 
 declare global {
+  // eslint-disable-next-line no-var
   var _mongoClientPromise: Promise<MongoClient> | undefined;
 }
 
@@ -22,20 +32,14 @@ if (process.env.NODE_ENV === 'development') {
   // In development mode, use a global variable so that the value
   // is preserved across module reloads caused by HMR (Hot Module Replacement).
   if (!global._mongoClientPromise) {
-    client = new MongoClient(uri, options);
-    global._mongoClientPromise = client.connect().catch((err) => {
-      console.error('Failed to connect to MongoDB:', err);
-      throw err;
-    });
+    client = new MongoClient(process.env.MONGODB_URI, options);
+    global._mongoClientPromise = client.connect();
   }
-  clientPromise = global._mongoClientPromise;
+  clientPromise = global._mongoClientPromise as Promise<MongoClient>;
 } else {
   // In production mode, it's best to not use a global variable.
-  client = new MongoClient(uri, options);
-  clientPromise = client.connect().catch((err) => {
-    console.error('Failed to connect to MongoDB:', err);
-    throw err;
-  });
+  client = new MongoClient(process.env.MONGODB_URI, options);
+  clientPromise = client.connect();
 }
 
 // Export a module-scoped MongoClient promise. By doing this in a
