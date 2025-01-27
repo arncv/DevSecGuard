@@ -10,12 +10,41 @@ DevSecGuard is a developer security assistant that helps identify potential secu
 - 🔑 **GitHub Integration**: Seamless authentication and repository access
 - 📱 **Responsive Design**: Works on desktop and mobile devices
 
+### Enhanced Dashboard Features
+
+- 📈 **Visual Analytics**: 
+  - Pie charts showing findings distribution by severity
+  - Bar charts displaying findings by type
+  - Clear visual indicators for scan status
+  - Visual severity score indicators
+
+- 🔍 **Advanced Filtering & Sorting**:
+  - Filter by status (Completed, Failed)
+  - Filter by severity (Critical, High, Medium, Low)
+  - Filter by finding type (Secrets, Vulnerabilities, Code Smells)
+  - Sort by date, findings count, or severity score
+  - Ascending/descending sort options
+
+- 💡 **Smart Remediation Guidance**:
+  - Type-specific remediation advice
+  - Clear, actionable recommendations
+  - Context-aware security best practices
+  - Detailed finding summaries
+
+- 🎯 **Improved User Experience**:
+  - Clear status indicators with icons
+  - Concise findings summaries
+  - Interactive data visualization
+  - Enhanced loading and empty states
+  - User-friendly error handling
+
 ## Tech Stack
 
 - **Frontend**: Next.js 14, TailwindCSS, React Query
 - **Authentication**: NextAuth.js with GitHub OAuth
 - **Database**: MongoDB
 - **Security**: GitHub API, Custom scanning patterns
+- **UI Components**: Heroicons, Recharts
 - **Deployment**: Ready for Vercel deployment
 
 ## Getting Started
@@ -56,15 +85,21 @@ DevSecGuard is a developer security assistant that helps identify potential secu
    - Potential secrets and API keys
    - SQL injection vulnerabilities
    - XSS vulnerabilities
-4. Track scan history and monitor security improvements
+   - Code quality issues
+4. Use dashboard features:
+   - Filter and sort findings
+   - View visual analytics
+   - Get remediation advice
+   - Track scan history
+5. Monitor security improvements over time
 
 ## Security Patterns
 
 DevSecGuard scans for the following security issues:
 
 - **Secrets**: API keys, tokens, and credentials
-- **SQL Injection**: Vulnerable SQL query patterns
-- **XSS**: Cross-site scripting vulnerabilities
+- **Vulnerabilities**: SQL injection, XSS, and other security vulnerabilities
+- **Code Smells**: Code quality issues that might lead to security problems
 
 ## Contributing
 
@@ -86,3 +121,7 @@ MIT License - feel free to use this project as a starting point for your own sec
 - [ ] Integrate with CI/CD pipelines
 - [ ] Add team collaboration features
 - [ ] Expand vulnerability detection patterns
+- [ ] Add export functionality for scan results
+- [ ] Implement automated remediation suggestions
+- [ ] Add custom dashboard widgets
+- [ ] Integrate with additional security tools
